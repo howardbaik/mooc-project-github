@@ -1,0 +1,1246 @@
+---
+title: "Final Report"
+author: "Howard Baek"
+date: "8/10/2018"
+output: 
+  html_document:
+    toc: yes
+    toc_float: yes
+    code_folding: hide
+    theme: spacelab
+    highlight: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache=002,
+                      cache.rebuild = F, 
+                      message = F, warning = F,
+                      autodep=TRUE,
+                      error = TRUE, comment = "")
+```
+
+# Introduction 
+
+MOOCs (Massive Open Online Courses) are educational resources that teach anyone with an internet connection a wide variety of topics, from Statistics to Modern Poetry. In 2013, the President’s Council of Advisors on Science and Technology stated that although “many questions and challenges remain” about MOOCs, this innovation has the potential to increase access to high-quality higher education at low cost. Evidently, MOOC is a transformative technology that allows better access to education than ever before. 
+
+However, a big problem in MOOC literature is the extremely high dropout rate from these courses. A widely known rate is 90% and this rate ranges from 65% to 97%. In this research project, I will be looking at factors leading to dropouts by using K-Means clustering to group the students into dropouts and non-dropouts. 
+
+```{r, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(kableExtra)
+library(plotly)
+library(cluster)
+library(magrittr)
+library(viridis)
+library(ggthemes)
+```
+
+```{r, cache=TRUE, cache.lazy = FALSE, warning = FALSE, message = FALSE}
+source("starter_code_analysis.R")
+```
+
+# EDA (Exploratory Data Analysis)
+
+### Glimpse of Datasets (Scroll Right to view Full Dataset)
+```{r}
+event_xtract %>%
+  head() %>% 
+  kable() %>% 
+  kable_styling()
+```
+
+```{r}
+weekly_effort %>% 
+  head() %>% 
+  kable() %>% 
+  kable_styling()
+```
+
+```{r}
+activity_grade %>% 
+  head() %>% 
+  kable() %>% 
+  kable_styling()
+```
+
+```{r}
+video_int %>% 
+  head() %>% 
+  kable() %>% 
+  kable_styling()
+```
+
+
+### How many unique students are there in the course?
+```{r}
+paste(length(reduce(list(event_xtract$anon_screen_name,
+             activity_grade$anon_screen_name,
+             weekly_effort$anon_screen_name), intersect)), "Students")
+
+# Save students for later usage:
+students <- reduce(list(event_xtract$anon_screen_name,
+             activity_grade$anon_screen_name,
+             weekly_effort$anon_screen_name), intersect)
+```
+
+* We found the number of students who are common in all four datasets.
+* This ensures maximum number of features to use for k-means clustering. 
+
+### What are the total number of students who dropped the course?
+
+##### Definition of dropout student 
+
+(Borrowed from Halawa et al "Dropout prediction in MOOCs using learner activity features")
+
+* Absent from the course for a period exceeding more than one month 
+
+OR 
+
+* Viewed fewer than 50 percent of the videos in the course
+
+In our dataset, no student was absent from the course for more than one month. Therefore, we only look at the second condition to find dropout students.
+
+```{r}
+# Filter out for Solutions and get number of unique video ids for each student
+condition_2 <- video_int %>% 
+  filter(!(str_detect(resource_display_name, "Solutions"))) %>% 
+  group_by(anon_screen_name) %>% 
+  summarise(num_videos = length(unique(video_id))) %>% 
+  mutate(prop_videos = num_videos / max(num_videos)) %>% 
+  filter(prop_videos < 0.5000)
+
+total_dropout <- condition_2 %>% 
+  select(anon_screen_name) %>% 
+  pull()
+
+paste(length(total_dropout), "Dropout Students")
+```
+
+* Dropout Rate: 65%
+
+
+### At what number of days did the dropouts fall off the curve?
+
+```{r}
+# Clustering of fall_off_ts (dropout students)
+fall_off_ts <- event_xtract %>% 
+  filter(anon_screen_name %in% total_dropout) %>% 
+  select(anon_screen_name) %>% 
+  inner_join(weekly_effort, by = "anon_screen_name") %>%
+  select(anon_screen_name, week, effort_sec) %>% 
+  dplyr::distinct() 
+
+fall_off_ts_clust <- fall_off_ts %>% 
+ spread(key = week, value = effort_sec) %>% 
+  replace_na(list("1" = 0,
+                  "2" = 0,
+                  "3" = 0,
+                  "4" = 0,
+                  "5" = 0,
+                  "6" = 0,
+                  "7" = 0,
+                  "8" = 0,
+                  "9" = 0,
+                  "10" = 0)) %>% as.data.frame()
+
+rownames(fall_off_ts_clust) <- fall_off_ts_clust$anon_screen_name
+fall_off_ts_clust <- fall_off_ts_clust %>% select(-anon_screen_name, -"11")
+
+
+fall_off_ts_tot_withinss <- map_dbl(1:10,  function(k){
+  model <- kmeans(x = fall_off_ts_clust, centers = k)
+  model$tot.withinss
+})
+
+fall_off_ts_elbow_df <- data.frame(
+  k = 1:10 ,
+  tot_withinss = fall_off_ts_tot_withinss
+)
+
+# Plot of Elbow Method
+ggplot(fall_off_ts_elbow_df, aes(x = k, y = tot_withinss)) +
+  geom_line() +
+  scale_x_continuous(breaks = 1:10) +
+  labs(x = "k",
+       y = "Total within-cluster sum of squares",
+       title = "Elbow Method of Clustering on Dropouts",
+       subtitle = "No clear Elbow. Try Silhouette Analysis")
+```
+
+```{r, eval = FALSE}
+sil_width <- map_dbl(2:10,  function(k){
+  model <- pam(x = fall_off_ts_clust, k = k)
+  model$silinfo$avg.width
+})
+
+sil_df <- data.frame(
+  k = 2:10,
+  sil_width = sil_width
+)
+
+ggplot(sil_df, aes(x = k, y = sil_width)) +
+  geom_line() +
+  scale_x_continuous(breaks = 2:10) +
+  labs(x = "K",
+       y = "Average Silhouette Widths") +
+  ggtitle("Average Silhouette Widths over K=2:10",
+          subtitle = "Average Silhoutte Width plot shows us that k = 2 is the best. Let's proceed to run k-means on k=2")
+```
+
+```{r}
+set.seed(42)
+fall_off_ts_clust_cluster <- kmeans(scale(fall_off_ts_clust), centers = 2)$cluster
+
+fall_off_clust_final <- fall_off_ts_clust %>% 
+  mutate(cluster = fall_off_ts_clust_cluster,
+         anon_screen_name = rownames(fall_off_ts_clust))
+
+# Cluster1 of anon_screen_names of dropouts
+anon_screen_name_cluster_1 <- fall_off_clust_final %>% 
+  filter(cluster == 1) %>% 
+  pull(anon_screen_name)
+
+# Cluster2 of anon_screen_names of dropouts
+anon_screen_name_cluster_2 <- fall_off_clust_final %>% 
+  filter(cluster == 2) %>% 
+  pull(anon_screen_name)
+
+# Final Grades
+final_grade <- read_csv("final_grades.csv")
+
+
+final_grade_1 <- final_grade %>% 
+  filter(anon_id %in% anon_screen_name_cluster_1) %>% 
+  summarise(final_grade_avg = mean(final_grade),
+            final_grade_sd = sd(final_grade))
+
+final_grade_2 <- final_grade %>% 
+  filter(anon_id %in% anon_screen_name_cluster_2) %>% 
+  summarise(final_grade_avg = mean(final_grade),
+            final_grade_sd = sd(final_grade))
+
+effort_hrs_1 <- weekly_effort %>% 
+  filter(anon_screen_name %in% anon_screen_name_cluster_1) %>% 
+  summarise(effort_hrs_avg = mean(effort_sec) / 3600,
+            effort_hrs_sd = sd(effort_sec) / 3600)
+
+effort_hrs_2 <- weekly_effort %>% 
+  filter(anon_screen_name %in% anon_screen_name_cluster_2) %>% 
+  summarise(effort_hrs_avg = mean(effort_sec) / 3600,
+            effort_hrs_sd = sd(effort_sec) / 3600)
+
+final_grade <- final_grade_1 %>% 
+  rbind(final_grade_2)
+
+effort_hrs <- effort_hrs_1 %>% 
+  rbind(effort_hrs_2)
+
+table_total <- final_grade %>% cbind(effort_hrs)
+rownames(table_total) <- c("Cluster1", "Cluster2")
+
+table_total %>%
+  round(2) %>% 
+  kableExtra::kable(col.names = c("Average of Final Grade",
+                                  "Standard Deviation of Final Grade",
+                                  "Average of Effort in Hours",
+                                  "Standard Deviation of Effort in Hours")) %>% 
+    kable_styling(bootstrap_options = c("striped", "hover", "responsive"))
+```
+
+
+```{r}
+fall_off_clust_final %>% 
+  gather("1":"10", key = week, value = effort_level) %>% 
+  mutate(effort_level = effort_level / 3600,
+         week = as.integer(week),
+         cluster = if_else(cluster == 1, "Cluster 1",
+                           "Cluster 2")) %>%
+  ggplot(aes(x = week, y = effort_level)) +
+  geom_line(aes(group = anon_screen_name), alpha = 0.1) +
+  scale_x_continuous(breaks = 1:10) +
+  geom_smooth(color = "red") +
+  facet_wrap(~cluster) +
+  labs(x = "Weeks", y = "Effort Levels in Hours") +
+  theme_few()
+
+```
+
+* K-Means Clustering 
+* We set the optimal number of k=2 (supported by Silhouette Analysis)
+* `r length(anon_screen_name_cluster_1)` students in Cluster 1 
+* `r length(anon_screen_name_cluster_2)` students in Cluster 2
+* Effort level of Cluster 1 Students falls off after approximately 2 weeks. 
+* Effort level of Cluster 2 Students is consistently low.
+* Table of Avg / Std of Final Grades and Effort show that more effort correlates with higher final grades.
+
+
+
+### What are the types of modules that the users are interacting with? 
+
+```{r}
+course <- activity_grade %>% 
+  filter(str_detect(module_id, "course")) %>% 
+  add_count(module_id) %>% 
+  summarise(norm_module = (sum(unique(n)) / length(unique(module_id))) / (length(unique(anon_screen_name)))) %>% mutate(module_type = "course")
+```
+
+
+
+```{r}
+seq <- activity_grade %>% 
+  filter(str_detect(module_id, "sequential")) %>% 
+  add_count(module_id) %>% 
+  summarise(norm_module = (sum(unique(n)) / length(unique(module_id))) / (length(unique(anon_screen_name)))) %>% mutate(module_type = "sequential")
+```
+
+
+
+
+```{r}
+prob <- activity_grade %>% 
+  filter(str_detect(module_id, "problem")) %>% 
+  add_count(module_id) %>% 
+  summarise(norm_module = (sum(unique(n)) / length(unique(module_id))) / (length(unique(anon_screen_name)))) %>%
+  mutate(module_type = "problem")
+
+vid <- activity_grade %>% 
+  filter(str_detect(module_id, "video")) %>% 
+  add_count(module_id) %>% 
+  summarise(norm_module = (sum(unique(n)) / length(unique(module_id))) / (length(unique(anon_screen_name)))) %>%
+  mutate(module_type = "video")
+
+chapter <- activity_grade %>% 
+  filter(str_detect(module_id, "chapter")) %>% 
+  add_count(module_id) %>% 
+  summarise(norm_module = (sum(unique(n)) / length(unique(module_id))) / (length(unique(anon_screen_name)))) %>% 
+  mutate(module_type = "chapter")
+
+final_module <- rbind(course, seq, prob, vid, chapter)
+
+final_module %>% 
+  # Removed course module since its count is 1.0
+  # Meaning: every other module falls under the umbrella of a course module.
+  filter(module_type != "course") %>% 
+  ggplot(aes(x = module_type, y = norm_module, fill = module_type)) +
+  geom_col() +
+  theme_bw() +
+  labs(x = "Module Types",
+       y = "Normalized Counts of Modules per Student"
+       ) +
+  guides(fill = FALSE) +
+  scale_x_discrete(limits = c("problem", "chapter", "sequential", "video"),
+                  labels = c("Problem", "Chapter", "Sequential", "Video")) +
+  theme_hc()
+```
+
+* We removed course module since its count is 1.0, meaning that every other module falls under the umbrella of a course module.
+* Problem module is the most popular- many students focused on solving questions.
+* Video was the least popular- Perhaps, this means students already knew material and didn't need to learn from video lecture.
+
+
+### Is there a discrepancy in Mean effort per Week for Dropouts vs Non-Dropouts?
+```{r}
+event_xtract %>%
+  mutate(course_complete = ifelse(anon_screen_name %in% total_dropout, "no",
+                                  "yes")) %>%
+  select(anon_screen_name, course_complete) %>%
+  inner_join(weekly_effort, by = "anon_screen_name") %>%
+  group_by(week, course_complete, anon_screen_name) %>%
+  summarise(mean_effort_hrs = mean(effort_sec) / 3600) %>%
+  filter(week < 10) %>% 
+  ggplot(aes(x = as.factor(week), y = mean_effort_hrs, fill = course_complete)) +
+  geom_boxplot(outlier.alpha = 0.35) +
+  scale_fill_hue(labels = c("Not Completed", "Completed")) +
+  labs(x = "Week",
+       y = "Average Effort in Hours",
+       fill = "Completion of Course"
+       ) +
+  ggtitle("Distribution of Average Effort in Hours Per Week\nBy Completion of Course") +
+  theme_hc()
+```
+
+* As expected, non-dropout students put in significantly higher average effort than dropout students.
+* There are many outliers in this dataset, suggesting high variability in weekly effort level.
+
+### Proporational Barchart of different effort levels per week
+```{r}
+# Get min, q1, median, q3, and maximum value for effort_level
+summary_effort <- summary(weekly_effort$effort_sec)
+
+# Plot
+weekly_effort %>% 
+  mutate(effort_level = ifelse(effort_sec < summary_effort[2] & effort_sec >= summary_effort[1], "low", ifelse(effort_sec <= summary_effort[5] & 
+                                        effort_sec >= summary_effort[2], "med",
+                                        ifelse(effort_sec > summary_effort[5] & effort_sec <= summary_effort[6], "high", "na")))) %>%
+  mutate(course_complete = ifelse(anon_screen_name %in% total_dropout, "Dropouts",
+                                  "Non-Dropouts")) %>% 
+  filter(week != 11) %>% 
+  count(week, course_complete, effort_level) %>%
+  group_by(week, course_complete) %>% 
+  mutate(n_percentage = round(n / sum(n), 2)) %>%
+  ggplot(aes(x = as.factor(week), y = n_percentage, fill = factor(effort_level, levels = c("high", "med", "low")))) +
+  geom_col(position = "fill") +
+  facet_wrap(~course_complete) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  scale_fill_hue(labels = c("High", "Medium", "Low")) +
+  labs(x = "Week",
+       y = "Percentage",
+       fill = "Effort Level") +
+  theme_few()
+```
+Categorized effort level into High, Medium, and Low Effort using Five-Number Summary:
+
+* 3rd Quartile < High Effort <= Maximum
+* 1st Quartile <= Medium Effort <= 3rd Quartile
+* Minimum <= Low Effort < 1st Quartile
+
+* Plot aligns with our expectations: dropout students put in less "High Effort" and more "Low Efort" levels.
+
+# Clustering in Stages
+```{r}
+# Make new dataframe for clustering
+# Decided to just go with students in weekly effort dataset
+# Instead of the object students I saved in the beginning.
+# Similiar number of students (7659 vs 7664)
+weekly_effort_new <- event_xtract %>% 
+  select(anon_screen_name) %>% 
+  inner_join(weekly_effort, by = "anon_screen_name") %>%
+  select(anon_screen_name, week, effort_sec) %>% 
+  dplyr::distinct() %>% 
+  filter(week != 11) %>%  # Only look at 10 weeks-filter out week11 because only 14 students have data for week11
+  as.data.frame()
+
+week_seq <- seq(from = as.Date("2014/06/24"), to = as.Date("2014/09/08"), by = "week")
+
+# Make new dataframe out of video dataset (Number of times students pressed "Play")
+video_int_clus <- video_int %>% 
+  mutate(time = as.Date(time),
+         video_week = case_when(
+           time <= week_seq[2] & time >= week_seq[1] ~ 1,
+           time <= week_seq[3] & time >= as.Date("2014-07-02") ~ 2,
+           time <= week_seq[4] & time >= as.Date("2014-07-09") ~ 3,
+           time <= week_seq[5] & time >= as.Date("2014-07-16") ~ 4,
+           time <= week_seq[6] & time >= as.Date("2014-07-23") ~ 5,
+           time <= week_seq[7] & time >= as.Date("2014-07-30") ~ 6,
+           time <= week_seq[8] & time >= as.Date("2014-08-06") ~ 7,
+           time <= week_seq[9] & time >= as.Date("2014-08-13") ~ 8,
+           time <= week_seq[10] & time >= as.Date("2014-08-20") ~ 9,
+           time <= week_seq[11] & time >= as.Date("2014-08-27") ~ 10,
+           TRUE ~ 0)) %>% 
+  filter(video_week != 0) %>%
+  select(anon_screen_name, video_week, event_type) %>% 
+  filter(event_type == "play_video") %>% 
+  group_by(anon_screen_name, video_week) %>% 
+  summarise(play_video_num = n()) %>% 
+  spread(key = video_week, value = play_video_num) %>% 
+  replace_na(list("1" = 0,
+                  "2" = 0,
+                  "3" = 0,
+                  "4" = 0,
+                  "5" = 0,
+                  "6" = 0,
+                  "7" = 0,
+                  "8" = 0,
+                  "9" = 0,
+                  "10" = 0)) %>% 
+  as.data.frame()
+
+# Manipulate weekly_effort
+weekly_effort_new %<>% 
+  spread(key = week, value = effort_sec) %>% 
+  replace_na(list("1" = 0,
+                  "2" = 0,
+                  "3" = 0,
+                  "4" = 0,
+                  "5" = 0,
+                  "6" = 0,
+                  "7" = 0,
+                  "8" = 0,
+                  "9" = 0,
+                  "10" = 0)) 
+
+video_int_clus %<>% column_to_rownames(var = "anon_screen_name")
+weekly_effort_new %<>% column_to_rownames(var = "anon_screen_name")
+
+names(video_int_clus) <- paste("week", names(video_int_clus), "video", sep = "_")
+names(weekly_effort_new) <- paste("week", names(weekly_effort_new), "effort", sep = "_")
+
+video_int_clus %<>% rownames_to_column(var = "anon_screen_name")
+weekly_effort_new %<>% rownames_to_column(var = "anon_screen_name")
+
+
+new_clus <- weekly_effort_new %>% 
+  inner_join(video_int_clus, by = "anon_screen_name")
+
+# First Stage
+new_clust_first <- new_clus %>% 
+  select(anon_screen_name, week_1_effort, week_1_video,
+         week_2_effort, week_2_video,
+         week_3_effort, week_3_video) %>% 
+  column_to_rownames(var = "anon_screen_name")
+
+# Second Stage
+new_clust_second <- new_clus %>% 
+  select(anon_screen_name, week_1_effort, week_1_video,
+         week_2_effort, week_2_video,
+         week_3_effort, week_3_video, week_4_effort, week_4_video,
+         week_5_effort, week_5_video,
+         week_6_effort, week_6_video) %>% 
+  column_to_rownames(var = "anon_screen_name")
+
+# Third Stage
+new_clust_third <- new_clus %>% 
+  select(anon_screen_name, week_1_effort, week_1_video,
+         week_2_effort, week_2_video,
+         week_3_effort, week_3_video, week_4_effort, week_4_video,
+         week_5_effort, week_5_video,
+         week_6_effort, week_6_video, week_7_effort, week_7_video,
+         week_8_effort, week_8_video,
+         week_9_effort, week_9_video,
+         week_10_effort, week_10_video) %>% 
+  column_to_rownames(var = "anon_screen_name")
+```
+
+* Looked at two weekly features, effort level and number of times student played video.
+* These features are allocated in three different "stages"
+1. First stage: Two features measured during Weeks 1~3
+2. Second Stage: Two features measured during Weeks 1~6
+3. Third Stage: Two features measured during Weeks 1~10 (all of available data)
+
+
+```{r}
+# Set seed
+set.seed(42)
+
+# K-Means on First Stage
+new_clust_first_kmeans <- kmeans(scale(new_clust_first), centers = 6)
+
+# K-Means on Second Stage
+new_clust_second_kmeans <- kmeans(scale(new_clust_second), centers = 6)
+
+# K-Means on Third Stage
+new_clust_third_kmeans <- kmeans(scale(new_clust_third), centers = 6)
+
+# Clean Up First Stage using broom::augment
+new_clust_first_kmeans <- broom::augment(new_clust_first_kmeans, new_clust_first)
+
+new_clust_first_kmeans <- new_clust_first_kmeans %>% 
+  rename(anon_screen_name = .rownames,
+         cluster = .cluster)
+
+new_clust_first_kmeans %<>% remove_rownames()
+
+# Clean Up Second Stage using broom::augment
+new_clust_second_kmeans <- broom::augment(new_clust_second_kmeans, new_clust_second)
+
+new_clust_second_kmeans <- new_clust_second_kmeans %>% 
+  rename(anon_screen_name = .rownames,
+         cluster = .cluster)
+
+new_clust_second_kmeans %<>% remove_rownames()
+
+# Clean Up Third Stage using broom::augment
+new_clust_third_kmeans <- broom::augment(new_clust_third_kmeans, new_clust_third)
+
+new_clust_third_kmeans <- new_clust_third_kmeans %>% 
+  rename(anon_screen_name = .rownames,
+         cluster = .cluster)
+
+new_clust_third_kmeans %<>% remove_rownames()
+```
+
+```{r}
+# Function to create "similarity matrix"
+student_id_match <- function(x, y) {
+  
+  # Define similarity matrix
+  similarity_mat <- matrix(nrow = 6, ncol = 6)
+  
+  
+  # For loops...sorry!
+  # ii = rows and jj = columns
+  for (ii in c(1:6)) {
+  
+    
+    
+    for (jj in c(1:6)) {
+      
+      first_group <- x %>%
+        filter(cluster == ii) %>% 
+        select(anon_screen_name) %>% 
+        pull()
+      
+      second_group <- y %>% 
+        filter(cluster == jj) %>% 
+        select(anon_screen_name) %>% 
+        pull()
+      
+      similarity_mat[ii, jj] <- mean(first_group %in% second_group)
+      
+      
+    }
+}
+ return(similarity_mat)
+}
+
+# Create similarity matrix
+first_second_sim <- student_id_match(x = new_clust_first_kmeans, 
+                 y = new_clust_second_kmeans)
+first_third_sim <- student_id_match(x = new_clust_first_kmeans, 
+                 y = new_clust_third_kmeans)
+second_third_sim <- student_id_match(x = new_clust_second_kmeans, 
+                 y = new_clust_third_kmeans)
+
+# First, set the dimension names first
+dimnames(first_second_sim) <- list(paste("first_group", "_cluster_", 1:6, sep =""),
+                                   paste("second_group", "_cluster_", 1:6, sep = ""))
+dimnames(first_third_sim) <- list(paste("first_group", "_cluster_", 1:6, sep =""),
+                                   paste("third_group", "_cluster_", 1:6, sep = ""))
+dimnames(second_third_sim) <- list(paste("second_group", "_cluster_", 1:6, sep =""),
+                                   paste("third_group", "_cluster_", 1:6, sep = ""))
+
+# Reshape melt
+first_second_sim <- reshape2::melt(first_second_sim)
+first_third_sim <- reshape2::melt(first_third_sim)
+second_third_sim <- reshape2::melt(second_third_sim)
+
+# Round values to two decimal places
+first_second_sim <- first_second_sim %>% 
+  mutate(value = round(value, digits = 2))
+
+first_third_sim <- first_third_sim %>% 
+  mutate(value = round(value, digits = 2))
+
+second_third_sim <- second_third_sim %>% 
+  mutate(value = round(value, digits = 2))
+
+# Plot Heatmaps
+ggplot(data = first_second_sim, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile() +
+  geom_text(aes(Var1, Var2, label = value), color = "black", size = 2.75) +
+  scale_fill_viridis(name = "Value") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(x = NULL,
+       y = NULL) +
+  scale_y_discrete(labels= c("Second Group (Cluster1)", 
+                             "Second Group (Cluster2)",
+                             "Second Group (Cluster3)",
+                             "Second Group (Cluster4)",
+                             "Second Group (Cluster5)",
+                             "Second Group (Cluster6)")) +
+  scale_x_discrete(labels = c("First Group (Cluster1)",
+                              "First Group (Cluster2)",
+                              "First Group (Cluster3)",
+                              "First Group (Cluster4)",
+                              "First Group (Cluster5)",
+                              "First Group (Cluster6)"))
+```
+
+```{r}
+ggplot(data = first_third_sim, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile() +
+  geom_text(aes(Var1, Var2, label = value), color = "black", size = 2.75) +
+  scale_fill_viridis(name = "Value") +
+  scale_x_discrete(labels= c("First Group (Cluster1)", 
+                             "First Group (Cluster2)",
+                             "First Group (Cluster3)",
+                             "First Group (Cluster4)",
+                             "First Group (Cluster5)",
+                             "First Group (Cluster6)")) +
+  scale_y_discrete(labels = c("Third Group (Cluster1)",
+                              "Third Group (Cluster2)",
+                              "Third Group (Cluster3)",
+                              "Third Group (Cluster4)",
+                              "Third Group (Cluster5)",
+                              "Third Group (Cluster6)")) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(x = NULL, y = NULL) 
+```
+
+```{r}
+ggplot(data = second_third_sim, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile() +
+  geom_text(aes(Var1, Var2, label = value), color = "black", size = 2.75) +
+  scale_fill_viridis(name = "Value") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(x = NULL,
+       y = NULL) +
+  scale_x_discrete(labels= c("Second Group (Cluster1)", 
+                             "Second Group (Cluster2)",
+                             "Second Group (Cluster3)",
+                             "Second Group (Cluster4)",
+                             "Second Group (Cluster5)",
+                             "Second Group (Cluster6)")) +
+  scale_y_discrete(labels = c("Third Group (Cluster1)",
+                              "Third Group (Cluster2)",
+                              "Third Group (Cluster3)",
+                              "Third Group (Cluster4)",
+                              "Third Group (Cluster5)",
+                              "Third Group (Cluster6)")) 
+```
+
+* Function of Similarity matrix: Find proportion of overlapping students among three different groups, or stages (each group has six clusters of students)
+* Results: We found very high overlap between First Group (Cluster 6), Second Group (Cluster 3), and Third Group (Cluster 4)
+* Now we move on to comparing the students in these 18 clusters to our ground truth of dropout and non-dropout students.
+
+
+### Barchart of Dropouts among different clusters
+
+
+```{r}
+# First Group
+bar_first <- new_clust_first_kmeans %>% 
+  mutate(cluster = as.character(cluster)) %>% 
+  group_by(cluster) %>% 
+  summarise(dropout_prop = mean(anon_screen_name %in% total_dropout)) %>% 
+  mutate(group = "first")
+
+# Second Group
+bar_second <- new_clust_second_kmeans %>% 
+  mutate(cluster = as.character(cluster)) %>% 
+  group_by(cluster) %>% 
+  summarise(dropout_prop = mean(anon_screen_name %in% total_dropout)) %>% 
+  mutate(group = "second")
+
+# Third Group
+bar_third <- new_clust_third_kmeans %>% 
+  mutate(cluster = as.character(cluster)) %>% 
+  group_by(cluster) %>% 
+  summarise(dropout_prop = mean(anon_screen_name %in% total_dropout)) %>% 
+  mutate(group = "third")
+
+# Combine three groups
+bar_total <- rbind(bar_first, bar_second, bar_third)
+
+# Facet labeller
+three_group <- list(
+  "first" = "Weeks 1~3",
+  "second" = "Weeks 1~6",
+  "third" = "Weeks 1~10"
+)
+
+three_group_labeller <- function(variable,value){
+  return(three_group[value])
+}
+
+# Draw Barchart
+bar_total %>%
+  mutate(dropout_prop = round(dropout_prop, 2)) %>% 
+  ggplot(aes(x = cluster, y = dropout_prop)) +
+  geom_col(aes(fill = cluster)) +
+  geom_text(aes(label = dropout_prop), position = position_stack(vjust = 0.5),
+            color = "black", size = 2.4) +
+  facet_wrap(~group, labeller = three_group_labeller) +
+  #scale_fill_viridis(name = "Value") +
+  labs(x = "Clusters",
+       y = "Dropout Proportions",
+       fill = "Clusters") +
+  theme_tufte()
+
+```
+
+* Overall outcome of Clustering in Stages: The K-Means clustering algorithm found the one cluster in each group that had an extremely high proportion of dropout students. 
+* We assume that the algorithm clustered the dropout students into one cluster (Cluster 6 in Group 1, Cluster 3 in Group 2, and Cluster 4 in Group 3).
+
+# Discover characteristics of dropouts
+```{r}
+# Dropout clusters: 
+# Group1: Cluster 6
+# Group2: Cluster 3
+# Group3: Cluster 4
+dropout_group1 <- new_clust_first_kmeans %>% 
+  mutate(cluster = as.character(cluster)) %>% 
+  filter(cluster == "6")
+
+dropout_group2 <- new_clust_second_kmeans %>%
+  mutate(cluster = as.character(cluster)) %>% 
+  filter(cluster == "3")
+  
+  
+dropout_group3 <- new_clust_third_kmeans %>% 
+  mutate(cluster = as.character(cluster)) %>% 
+  filter(cluster == "4")
+
+# Effort / Video number of seconds for Dropouts vs Non-Dropouts (Group 1)
+new_clust_first_kmeans %>% 
+  mutate(cluster = as.character(cluster)) %>% 
+  mutate(is_dropout = if_else(cluster == "6", "Dropout", "Non-Dropout"),
+         is_dropout = factor(is_dropout, levels = c("Non-Dropout", "Dropout"))) %>% 
+  select(-anon_screen_name, -cluster) %>% 
+  group_by(is_dropout) %>% 
+  summarise_all(mean, na.rm = TRUE) %>% 
+  gather(week_1_effort:week_3_video, key = "metric", value = avg_sec) %>%
+  mutate(week = str_extract(metric, "\\-*\\d+\\.*\\d*"),
+         video_effort = str_sub(metric, start = 8),
+         video_effort = factor(video_effort, labels = c("Effort Level",
+                                                        "Video Level"))) %>%
+  mutate(week = as.integer(week)) %>%
+  mutate(avg_hr = avg_sec / 3600) %>%
+  mutate(week = as.character(week),
+         week = factor(paste("Week", week, sep = " "),
+                       levels = c("Week 1",
+                                  "Week 2",
+                                  "Week 3"
+                                  ))) %>% 
+  ggplot(aes(x = week, y = avg_hr)) +
+  geom_line(aes(group = is_dropout, col = is_dropout)) +
+  facet_wrap(~video_effort, scales = "free_y") +
+  labs(x = NULL, y = "Average Hours",
+       col = "") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+
+
+# Effort / Video number of seconds for Dropouts vs Non-Dropouts (Group 2)
+new_clust_second_kmeans %>% 
+  mutate(cluster = as.character(cluster)) %>% 
+  mutate(is_dropout = if_else(cluster == "3", "Dropout", "Non-Dropout"),
+         is_dropout = factor(is_dropout, levels = c("Non-Dropout", "Dropout"))) %>% 
+  select(-anon_screen_name, -cluster) %>% 
+  group_by(is_dropout) %>% 
+  summarise_all(mean, na.rm = TRUE) %>% 
+  gather(week_1_effort:week_6_video, key = "metric", value = avg_sec) %>%
+  mutate(week = str_extract(metric, "\\-*\\d+\\.*\\d*"),
+         video_effort = str_sub(metric, start = 8),
+         video_effort = factor(video_effort, labels = c("Effort Level",
+                                                        "Video Level"))) %>%
+  mutate(week = as.integer(week)) %>%
+  mutate(avg_hr = avg_sec / 3600) %>%
+  mutate(week = as.character(week),
+         week = factor(paste("Week", week, sep = " "),
+                       levels = c("Week 1",
+                                  "Week 2",
+                                  "Week 3",
+                                  "Week 4",
+                                  "Week 5",
+                                  "Week 6"))) %>% 
+  ggplot(aes(x = week, y = avg_hr)) +
+  geom_line(aes(group = is_dropout, col = is_dropout)) +
+  facet_wrap(~video_effort, scales = "free_y") +
+  labs(x = NULL,
+       y = "Average Hours",
+       col = "") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+
+# Effort / Video number of seconds for Dropouts vs Non-Dropouts (Group 3)
+new_clust_third_kmeans %>% 
+  mutate(cluster = as.character(cluster)) %>% 
+  mutate(is_dropout = if_else(cluster == "4", "Dropout", "Non-Dropout"),
+         is_dropout = factor(is_dropout, levels = c("Non-Dropout", "Dropout"))) %>% 
+  select(-anon_screen_name, -cluster) %>% 
+  group_by(is_dropout) %>% 
+  summarise_all(mean, na.rm = TRUE) %>% 
+  gather(week_1_effort:week_10_video, key = "metric", value = avg_sec) %>%
+  mutate(week = str_extract(metric, "\\-*\\d+\\.*\\d*"),
+         video_effort = str_sub(metric, start = 8)) %>%
+  mutate(week = as.integer(week)) %>%
+  mutate(avg_hr = avg_sec / 3600) %>% 
+  mutate(video_effort = str_replace(video_effort, "_", ""),
+         video_effort = factor(video_effort, labels = c("Effort Level",
+                                                        "Video Level"))) %>% 
+  mutate(week = as.character(week),
+         week = factor(paste("Week", week, sep = " "),
+                       levels = c("Week 1",
+                                  "Week 2",
+                                  "Week 3",
+                                  "Week 4",
+                                  "Week 5",
+                                  "Week 6",
+                                  "Week 7",
+                                  "Week 8",
+                                  "Week 9",
+                                  "Week 10"))) %>% 
+  ggplot(aes(x = week, y = avg_hr)) +
+  geom_line(aes(group = is_dropout, col = is_dropout)) +
+  facet_wrap(~video_effort, scales = "free_y") +
+  labs(x = NULL,
+       y = "Average Hours",
+       col = "") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+# Clustering of Different Averages 
+
+```{r}
+# Manipulate video interaction data
+video_int_clus_avg <- video_int_clus %>%
+  gather(-anon_screen_name, key = "video_week", value = "number_play") %>% 
+  mutate(week = as.integer(substr(video_week, 6, 6))) %>% 
+  select(anon_screen_name, week, number_play)
+```
+
+```{r}
+# Make dataframe of weekly efforts + number of times video played
+weekly_effort_clustering <- event_xtract %>% 
+    select(anon_screen_name) %>% 
+    filter(anon_screen_name %in% students) %>% 
+  inner_join(weekly_effort, by = "anon_screen_name") %>%
+  inner_join(video_int_clus_avg, by = c("anon_screen_name", "week")) %>% 
+  group_by(anon_screen_name) %>% 
+  summarise(effort_sec_avg = mean(effort_sec, na.rm = TRUE),
+            number_play_avg = mean(number_play, na.rm = TRUE)) %>% 
+  as.data.frame()
+```
+
+
+
+```{r}
+# Wrangle data in form for K-Means clustering
+rownames(weekly_effort_clustering) <- weekly_effort_clustering$anon_screen_name
+weekly_effort_clustering <- weekly_effort_clustering %>% select(-anon_screen_name)
+
+# Run KMeans Algorithm with 2 centers
+weekly_effort_clustering_kmeans <- kmeans(scale(weekly_effort_clustering), centers = 2)
+
+# Assign clusters (1 or 2) to each student
+weekly_effort_clustering_kmeans_clust <- broom::augment(weekly_effort_clustering_kmeans, weekly_effort_clustering)
+```
+
+
+
+```{r}
+# Rename columns
+weekly_effort_clustering_kmeans_clust <- weekly_effort_clustering_kmeans_clust %>% 
+  rename(anon_screen_name = .rownames,
+         cluster = .cluster)
+
+# Wrangle data
+# Use magrittr's compound assignment pipe-operator
+weekly_effort_clustering_kmeans_clust %<>% remove_rownames
+
+# Pull out students in cluster 1
+weekly_effort_clustering_kmeans_clust1 <- weekly_effort_clustering_kmeans_clust %>% 
+  filter(cluster == 1) %>% 
+  select(anon_screen_name) %>% 
+  pull() 
+
+# Pull out students in cluster 2
+weekly_effort_clustering_kmeans_clust2 <- weekly_effort_clustering_kmeans_clust %>% 
+  filter(cluster == 2) %>% 
+  select(anon_screen_name) %>% 
+  pull() 
+```
+
+
+```{r}
+# Cluster for first half (Earlier than Week 5 or Week 5)
+weekly_effort_clustering_first_half <- event_xtract %>% 
+  select(anon_screen_name) %>% 
+  # The object students: Unique students in all four datasets
+  filter(anon_screen_name %in% students) %>% 
+  inner_join(weekly_effort, by = "anon_screen_name") %>%
+  inner_join(video_int_clus_avg, by = c("anon_screen_name", "week")) %>% 
+  dplyr::distinct() %>%
+  filter(week <= 5) %>% 
+  group_by(anon_screen_name) %>%
+  summarise(effort_sec_avg_first_half = mean(effort_sec, na.rm = TRUE),
+            number_play_avg_first_half = mean(number_play, na.rm = TRUE)) %>% 
+  as.data.frame()
+
+weekly_effort_clustering_second_half <- event_xtract %>% 
+  select(anon_screen_name) %>% 
+  filter(anon_screen_name %in% students) %>% 
+  inner_join(weekly_effort, by = "anon_screen_name") %>%
+  inner_join(video_int_clus_avg, by = c("anon_screen_name", "week")) %>% 
+  dplyr::distinct() %>%
+  filter(week > 5) %>% 
+  group_by(anon_screen_name) %>%
+  summarise(effort_sec_avg_second_half = mean(effort_sec, na.rm = TRUE),
+            number_play_avg_second_half = mean(number_play, na.rm = TRUE)) %>% 
+  as.data.frame()
+
+
+weekly_effort_clustering_half <- weekly_effort_clustering_first_half  %>% 
+  left_join(weekly_effort_clustering_second_half, by = "anon_screen_name") %>%
+  replace_na(list(effort_sec_avg_second_half = 0, number_play_avg_second_half = 0))
+
+weekly_effort_clustering_half %<>% column_to_rownames(var = "anon_screen_name")
+
+# K-Means clustering
+weekly_effort_clustering_half_kmeans <- kmeans(scale(weekly_effort_clustering_half), centers = 2)
+
+weekly_effort_clustering_half_kmeans_final <- broom::augment(weekly_effort_clustering_half_kmeans, weekly_effort_clustering_half)
+
+weekly_effort_clustering_half_kmeans_final <- weekly_effort_clustering_half_kmeans_final %>% 
+  rename(anon_screen_name = .rownames,
+         cluster = .cluster)
+
+weekly_effort_clustering_half_kmeans_final %<>% remove_rownames()
+
+weekly_effort_clustering_half_kmeans_final_cluster1 <- weekly_effort_clustering_half_kmeans_final %>%
+  filter(cluster == 1) %>% 
+  select(anon_screen_name) %>% 
+  pull() 
+
+weekly_effort_clustering_half_kmeans_final_cluster2 <- 
+  weekly_effort_clustering_half_kmeans_final %>% 
+  filter(cluster == 2) %>% 
+  select(anon_screen_name) %>% 
+  pull() 
+  
+
+# Clustering by Quarters
+weekly_effort_clustering_first_quarter <- event_xtract %>% 
+  select(anon_screen_name) %>% 
+  filter(anon_screen_name %in% students) %>% 
+  inner_join(weekly_effort, by = "anon_screen_name") %>%
+  inner_join(video_int_clus_avg, by = c("anon_screen_name", "week")) %>% 
+  dplyr::distinct() %>%
+  filter(week <= 3) %>%
+  mutate(effort_sec_first_quarter = 
+           ifelse(week == 3, effort_sec / 2, effort_sec),
+         number_play_first_quarter = 
+           ifelse(week == 3, number_play / 2, number_play)) %>% 
+  group_by(anon_screen_name) %>%
+  summarise(effort_sec_avg_first_quarter = mean(effort_sec_first_quarter, na.rm = TRUE),
+            number_play_avg_first_quarter = mean(number_play_first_quarter, na.rm = TRUE)) %>% 
+  as.data.frame()
+
+weekly_effort_clustering_second_quarter <- event_xtract %>% 
+  select(anon_screen_name) %>% 
+  filter(anon_screen_name %in% students) %>% 
+  inner_join(weekly_effort, by = "anon_screen_name") %>%
+  inner_join(video_int_clus_avg, by = c("anon_screen_name", "week")) %>% 
+  dplyr::distinct() %>%
+  filter(week <= 5 & week >= 3) %>%
+  mutate(effort_sec_second_quarter = 
+           ifelse(week == 3, effort_sec / 2, effort_sec),
+         number_play_second_quarter = 
+           ifelse(week == 3, number_play / 2, number_play)) %>% 
+  group_by(anon_screen_name) %>%
+  summarise(effort_sec_avg_second_quarter = mean(effort_sec_second_quarter, na.rm = TRUE),
+            number_play_avg_second_quarter = mean(number_play_second_quarter, na.rm = TRUE)) %>% 
+  as.data.frame()
+
+weekly_effort_clustering_third_quarter <- event_xtract %>% 
+  select(anon_screen_name) %>% 
+  filter(anon_screen_name %in% students) %>% 
+  inner_join(weekly_effort, by = "anon_screen_name") %>%
+  inner_join(video_int_clus_avg, by = c("anon_screen_name", "week")) %>% 
+  dplyr::distinct() %>%
+  filter(week %in% c(6,7,8)) %>%
+  mutate(effort_sec_third_quarter = 
+           ifelse(week == 8, effort_sec / 2, effort_sec),
+         number_play_third_quarter = 
+           ifelse(week == 8, number_play / 2, number_play)) %>% 
+  group_by(anon_screen_name) %>%
+  summarise(effort_sec_avg_third_quarter = mean(effort_sec_third_quarter, na.rm = TRUE),
+            number_play_avg_third_quarter = mean(number_play_third_quarter, na.rm = TRUE)) %>% 
+  as.data.frame()
+
+
+weekly_effort_clustering_fourth_quarter <- event_xtract %>% 
+  select(anon_screen_name) %>% 
+  filter(anon_screen_name %in% students) %>% 
+  inner_join(weekly_effort, by = "anon_screen_name") %>%
+  inner_join(video_int_clus_avg, by = c("anon_screen_name", "week")) %>% 
+  dplyr::distinct() %>%
+  filter(week %in% c(8, 9, 10)) %>%
+  mutate(effort_sec_fourth_quarter = 
+           ifelse(week == 8, effort_sec / 2, effort_sec),
+         number_play_fourth_quarter = 
+           ifelse(week == 8, number_play / 2, number_play)) %>% 
+  group_by(anon_screen_name) %>%
+  summarise(effort_sec_avg_fourth_quarter = mean(effort_sec_fourth_quarter, na.rm = TRUE),
+            number_play_avg_fourth_quarter = mean(number_play_fourth_quarter, na.rm = TRUE)) %>% 
+  as.data.frame()
+
+ weekly_effort_clustering_quarterly <- weekly_effort_clustering_first_quarter  %>% 
+  left_join(weekly_effort_clustering_second_quarter, by = "anon_screen_name") %>%
+  left_join(weekly_effort_clustering_third_quarter, by = "anon_screen_name") %>% 
+  left_join(weekly_effort_clustering_fourth_quarter, by = "anon_screen_name") %>%  
+  replace_na(list(effort_sec_avg_second_quarter = 0,
+                  effort_sec_avg_third_quarter = 0,
+                  effort_sec_avg_fourth_quarter = 0,
+                  number_play_avg_first_quarter = 0,
+                  number_play_avg_second_quarter = 0,
+                  number_play_avg_third_quarter = 0,
+                  number_play_avg_fourth_quarter = 0))
+
+weekly_effort_clustering_quarterly %<>% column_to_rownames(var = "anon_screen_name")
+```
+
+
+```{r}
+# K means on Quarterly Clustering
+weekly_effort_clustering_quarter_kmeans <- kmeans(scale(weekly_effort_clustering_quarterly), centers = 2)
+
+weekly_effort_clustering_quarter_kmeans <- broom::augment(weekly_effort_clustering_quarter_kmeans, weekly_effort_clustering_quarterly)
+
+weekly_effort_clustering_quarter_kmeans <- weekly_effort_clustering_quarter_kmeans %>% 
+  rename(anon_screen_name = .rownames,
+         cluster = .cluster)
+
+weekly_effort_clustering_quarter_kmeans %<>% remove_rownames()
+
+weekly_effort_clustering_quarter_kmeans_cluster1 <- weekly_effort_clustering_quarter_kmeans %>% 
+  filter(cluster == 1) %>% 
+  select(anon_screen_name) %>% 
+  pull()
+
+weekly_effort_clustering_quarter_kmeans_cluster2 <- weekly_effort_clustering_quarter_kmeans %>% 
+  filter(cluster == 2) %>% 
+  select(anon_screen_name) %>% 
+  pull() 
+
+
+# Proportion of Dropouts in first cluster:
+mean(weekly_effort_clustering_quarter_kmeans_cluster1 %in% total_dropout)
+# 0.833
+
+# Proportion of Dropouts in second cluster:
+mean(weekly_effort_clustering_quarter_kmeans_cluster2 %in% total_dropout)
+# 0.0534
+
+# This means the first cluster is Predicted Dropout Cluster
+# This means the second cluster is Predicted Non-Dropout Cluster
+
+# Predicted Dropout Cluster:
+#weekly_effort_clustering_quarter_kmeans_cluster1
+# Predicted Non-Dropout Cluster:
+#weekly_effort_clustering_quarter_kmeans_cluster2
+
+# Find non-dropouts:
+total_non_dropout <- setdiff(students, total_dropout)
+
+
+
+# True Positive
+true_pos_quarterly <- sum(weekly_effort_clustering_quarter_kmeans_cluster1 %in% total_dropout)
+
+# True Negative
+true_neg_quarterly <- sum(weekly_effort_clustering_quarter_kmeans_cluster2 %in% total_non_dropout)
+
+# False Negative
+false_neg_quarterly <- sum(weekly_effort_clustering_quarter_kmeans_cluster2 %in% total_dropout)
+
+# False Positive
+false_pos_quarterly <- sum(weekly_effort_clustering_quarter_kmeans_cluster1 %in% total_non_dropout)
+
+
+# Accuracy
+accuracy_quarterly <- (true_pos_quarterly + true_neg_quarterly) / (true_pos_quarterly + true_neg_quarterly + false_neg_quarterly + false_pos_quarterly) 
+
+# Precision: TP / (FP + TP)
+precision_quarterly <- true_pos_quarterly / (false_pos_quarterly + true_pos_quarterly)
+
+# Recall: TP / (TP + FN)
+recall_metric_quarterly <- true_pos_quarterly / (true_pos_quarterly + false_neg_quarterly)
+
+
+# F-1 Score
+f_quarterly <- 2 * ((precision_quarterly * recall_metric_quarterly) / (recall_metric_quarterly + precision_quarterly))
+```
+
+
+```{r}
+# Proportion of Dropouts in first cluster:
+mean(weekly_effort_clustering_half_kmeans_final_cluster1 %in% total_dropout)
+
+
+# Proportion of Dropouts in second cluster:
+mean(weekly_effort_clustering_half_kmeans_final_cluster2 %in% total_dropout)
+
+
+# This means the second cluster is Predicted Dropout Cluster
+# This means the first cluster is Predicted Non-Dropout Cluster
+
+# Predicted Dropout Cluster:
+#weekly_effort_clustering_half_kmeans_final_cluster2
+# Predicted Non-Dropout Cluster:
+# weekly_effort_clustering_half_kmeans_final_cluster1
+
+# True Positive
+true_pos_half <- sum(weekly_effort_clustering_half_kmeans_final_cluster2 %in% total_dropout)
+
+# True Negative
+true_neg_half <- sum(weekly_effort_clustering_half_kmeans_final_cluster1 %in% total_non_dropout)
+
+# False Negative
+false_neg_half <- sum(weekly_effort_clustering_half_kmeans_final_cluster1 %in% total_dropout)
+
+# False Positive
+false_pos_half <- sum(weekly_effort_clustering_half_kmeans_final_cluster2 %in% total_non_dropout)
+
+# Accuracy
+accuracy_half <- (true_pos_half + true_neg_half) / (true_pos_half + true_neg_half + false_neg_half + false_pos_half) 
+
+# Precision: TP / (FP + TP)
+precision_half <- true_pos_half / (false_pos_half + true_pos_half)
+
+# Recall: TP / (TP + FN)
+recall_metric_half <- true_pos_half / (true_pos_half + false_neg_half)
+
+
+# F-1 Score
+f_half <- 2 * ((precision_half * recall_metric_half) / (recall_metric_half + precision_half))
+```
+
+
+```{r}
+# Proportion of Dropouts in first cluster:
+mean(weekly_effort_clustering_kmeans_clust1 %in% total_dropout)
+# 0.337
+
+# Proportion of Dropouts in second cluster:
+mean(weekly_effort_clustering_kmeans_clust2 %in% total_dropout)
+# 0.735
+
+# This means the second cluster is Predicted Dropout Cluster
+# This means the first cluster is Predicted Non-Dropout Cluster
+
+# Predicted Dropout Cluster:
+#weekly_effort_clustering_kmeans_clust2
+# Predicted Non-Dropout Cluster:
+# weekly_effort_clustering_kmeans_clust1
+
+# True Positive
+true_pos_full <- sum(weekly_effort_clustering_kmeans_clust2 %in% total_dropout)
+
+# True Negative
+true_neg_full <- sum(weekly_effort_clustering_kmeans_clust1 %in% total_non_dropout)
+
+# False Negative
+false_neg_full <- sum(weekly_effort_clustering_kmeans_clust1 %in% total_dropout)
+
+# False Positive
+false_pos_full <- sum(weekly_effort_clustering_kmeans_clust2 %in% total_non_dropout)
+
+# Accuracy
+accuracy_full <- (true_pos_full + true_neg_full) / (true_pos_full + true_neg_full + false_neg_full + false_pos_full) 
+
+# Precision: TP / (FP + TP)
+precision_full <- true_pos_full / (false_pos_full + true_pos_full)
+
+# Recall: TP / (TP + FN)
+recall_metric_full <- true_pos_full / (true_pos_full + false_neg_full)
+
+
+# F-1 Score
+f_full <- 2 * ((precision_full * recall_metric_full) / (recall_metric_full + precision_full))
+```
+
+
+### Table with Accuracy, Precision, Recall, and F-1 Scores
+```{r}
+final_metric <- data.frame(accuracy = c(accuracy_full, accuracy_half, accuracy_quarterly), precision = c(precision_full, precision_half, precision_quarterly), recall = c(recall_metric_full, recall_metric_half, recall_metric_quarterly), f_score = c(f_full, f_half, f_quarterly), row.names = c("Full", "Halves", "Quarterly"))                                                   
+colnames(final_metric) <- c("Accuracy", "Precision", "Recall", "F1 Score")
+
+final_metric %>% 
+  kableExtra::kable(col.names = c("Accuracy",
+                                  "Precision",
+                                  "Recall",
+                                  "F1 Score"), digits = 2
+                    ) %>% 
+    kable_styling(bootstrap_options = c("striped", "hover", "responsive"))
+```
+
+* Performed K-means clustering (K =  2) with two distinct features- effort level & number of times student played video.
+
+1) First Step ("Full"): Get two features (10 week average of effort level + 10 week average of number of times student played video)
+
+2) Second Step ("Halves"): Get four features (Two 5 week averages of effort level + Two 5 week averages of number of times student played video)
+
+3) Third Step ("Quarterly"): Get eight features (Four 2.5 week averages of effort level + Four 2.5 week averages of number of times student played video)
+
+* Key Takeaway: Negligible difference between Quarterly (8 features) and Halves (4 features), so we don't necessarily need to divide time period into quarters. 
