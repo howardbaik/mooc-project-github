@@ -17,6 +17,10 @@
 
 # Poster
 
+![Poster](https://github.com/howardbaek/mooc-project-github/blob/master/img/poster-screenshot.png)
 
+
+
+<br>
 
 Contact: howardba@uw.edu
