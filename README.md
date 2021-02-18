@@ -7,6 +7,9 @@
 
 # Screenshots of Dashboard
 
+![Overview of class](https://github.com/howardbaek/mooc-project-github/blob/master/img/overview-class.png)
+
+![Student Selector](https://github.com/howardbaek/mooc-project-github/blob/master/img/student-selector.png)
 
 <br>
 
