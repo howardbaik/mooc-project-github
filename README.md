@@ -5,6 +5,8 @@
 - `app.R` contains the R code to create my Shiny Dashboard.
 - `starter_code_shiny.R` contains datasets and useful variables used in my Shiny Dashboard
 
+# Screenshots of Dashboard
+
 
 <br>
 
