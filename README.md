@@ -23,4 +23,4 @@
 
 <br>
 
-Contact: howardba@uw.edu
+## Contact: howardba@uw.edu
